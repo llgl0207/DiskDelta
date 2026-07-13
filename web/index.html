@@ -1,0 +1,1498 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DiskDelta - NTFS MFT 扫描与差异比较工具</title>
+<style>
+/* ===== CSS Reset & Variables ===== */
+:root {
+    --bg-primary: #0f1419;
+    --bg-secondary: #1a1f2e;
+    --bg-card: #1e2538;
+    --bg-hover: #252d40;
+    --border: #2a3348;
+    --text-primary: #e2e8f0;
+    --text-secondary: #8892a8;
+    --accent-blue: #3b82f6;
+    --accent-green: #22c55e;
+    --accent-red: #ef4444;
+    --accent-yellow: #eab308;
+    --accent-purple: #a855f7;
+    --new-color: #22c55e;
+    --deleted-color: #ef4444;
+    --increased-color: #f97316;
+    --decreased-color: #3b82f6;
+    --unchanged-color: #6b7280;
+    --radius: 8px;
+    --shadow: 0 4px 24px rgba(0,0,0,0.3);
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+                 'Microsoft YaHei', sans-serif;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    min-height: 100vh;
+    line-height: 1.6;
+}
+
+/* ===== Layout ===== */
+.app-container {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+/* ===== Header ===== */
+header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 0;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 24px;
+}
+
+.logo {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.logo-icon {
+    width: 40px;
+    height: 40px;
+    background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 20px;
+    font-weight: bold;
+    color: white;
+}
+
+.logo h1 {
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+}
+
+.logo span {
+    color: var(--text-secondary);
+    font-size: 13px;
+}
+
+.header-right {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.status-indicator {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--accent-green);
+    animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+/* ===== Cards ===== */
+.card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+    margin-bottom: 16px;
+    transition: border-color 0.2s;
+}
+
+.card:hover {
+    border-color: var(--accent-blue);
+}
+
+.card-title {
+    font-size: 15px;
+    font-weight: 600;
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.card-title .icon {
+    font-size: 18px;
+}
+
+/* ===== Control Row ===== */
+.control-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px;
+}
+
+.control-row label {
+    font-size: 14px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+/* ===== Select & Input ===== */
+select, input[type="text"] {
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-size: 14px;
+    outline: none;
+    transition: border-color 0.2s;
+}
+
+select:focus, input[type="text"]:focus {
+    border-color: var(--accent-blue);
+}
+
+select option {
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+}
+
+/* ===== Buttons ===== */
+.btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 16px;
+    border: none;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+    white-space: nowrap;
+}
+
+.btn-primary {
+    background: var(--accent-blue);
+    color: white;
+}
+
+.btn-primary:hover {
+    background: #2563eb;
+    transform: translateY(-1px);
+}
+
+.btn-primary:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none;
+}
+
+.btn-success {
+    background: var(--accent-green);
+    color: white;
+}
+
+.btn-success:hover {
+    background: #16a34a;
+}
+
+.btn-danger {
+    background: var(--accent-red);
+    color: white;
+}
+
+.btn-danger:hover {
+    background: #dc2626;
+}
+
+.btn-outline {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-primary);
+}
+
+.btn-outline:hover {
+    background: var(--bg-hover);
+    border-color: var(--accent-blue);
+}
+
+.btn-sm {
+    padding: 4px 10px;
+    font-size: 12px;
+}
+
+/* ===== Progress Bar ===== */
+.progress-container {
+    display: none;
+    margin-top: 12px;
+}
+
+.progress-container.active {
+    display: block;
+}
+
+.progress-bar-bg {
+    width: 100%;
+    height: 8px;
+    background: var(--bg-secondary);
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.progress-bar-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--accent-blue), var(--accent-purple));
+    border-radius: 4px;
+    width: 0%;
+    transition: width 0.3s ease;
+}
+
+.progress-text {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-top: 6px;
+    display: flex;
+    justify-content: space-between;
+}
+
+/* ===== Grid Layout ===== */
+.main-grid {
+    display: grid;
+    grid-template-columns: 320px 1fr;
+    gap: 16px;
+}
+
+/* ===== Sidebar ===== */
+.sidebar-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px;
+    margin-bottom: 16px;
+}
+
+.snapshot-list {
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+.snapshot-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.2s;
+    font-size: 13px;
+    margin-bottom: 4px;
+}
+
+.snapshot-item:hover {
+    background: var(--bg-hover);
+}
+
+.snapshot-item.selected {
+    background: var(--bg-hover);
+    border: 1px solid var(--accent-blue);
+}
+
+.snapshot-item .ts {
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+
+.snapshot-checkbox {
+    margin-right: 8px;
+    accent-color: var(--accent-blue);
+    width: 16px;
+    height: 16px;
+}
+
+/* ===== Summary Stats ===== */
+.summary-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 8px;
+    margin-bottom: 16px;
+}
+
+.stat-card {
+    background: var(--bg-secondary);
+    border-radius: 6px;
+    padding: 12px;
+    text-align: center;
+}
+
+.stat-card .stat-value {
+    font-size: 20px;
+    font-weight: 700;
+}
+
+.stat-card .stat-label {
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-top: 2px;
+}
+
+.stat-card.blue .stat-value { color: var(--accent-blue); }
+.stat-card.green .stat-value { color: var(--accent-green); }
+.stat-card.red .stat-value { color: var(--accent-red); }
+.stat-card.yellow .stat-value { color: var(--accent-yellow); }
+.stat-card.purple .stat-value { color: var(--accent-purple); }
+
+/* ===== Filter Bar ===== */
+.filter-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.filter-bar .btn-group {
+    display: flex;
+    gap: 4px;
+}
+
+.filter-btn {
+    padding: 4px 10px;
+    font-size: 12px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-secondary);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.filter-btn.active {
+    background: var(--accent-blue);
+    color: white;
+    border-color: var(--accent-blue);
+}
+
+.filter-btn:hover:not(.active) {
+    border-color: var(--accent-blue);
+    color: var(--text-primary);
+}
+
+.search-input {
+    flex: 1;
+    min-width: 150px;
+}
+
+/* ===== Table ===== */
+.table-container {
+    overflow-x: auto;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+thead {
+    background: var(--bg-secondary);
+    position: sticky;
+    top: 0;
+    z-index: 1;
+}
+
+th {
+    padding: 10px 12px;
+    text-align: left;
+    font-weight: 600;
+    color: var(--text-secondary);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+}
+
+th:hover {
+    color: var(--text-primary);
+}
+
+th .sort-arrow {
+    margin-left: 4px;
+    opacity: 0.5;
+}
+
+th.sorted .sort-arrow {
+    opacity: 1;
+    color: var(--accent-blue);
+}
+
+td {
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+}
+
+tr:hover td {
+    background: var(--bg-hover);
+}
+
+tr.new td { border-left: 3px solid var(--new-color); }
+tr.deleted td { border-left: 3px solid var(--deleted-color); }
+tr.increased td { border-left: 3px solid var(--increased-color); }
+tr.decreased td { border-left: 3px solid var(--decreased-color); }
+tr.unchanged td { border-left: 3px solid var(--unchanged-color); }
+
+/* ===== Status Badges ===== */
+.badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.badge-new {
+    background: rgba(34, 197, 94, 0.15);
+    color: var(--new-color);
+}
+
+.badge-deleted {
+    background: rgba(239, 68, 68, 0.15);
+    color: var(--deleted-color);
+}
+
+.badge-increased {
+    background: rgba(249, 115, 22, 0.15);
+    color: var(--increased-color);
+}
+
+.badge-decreased {
+    background: rgba(59, 130, 246, 0.15);
+    color: var(--decreased-color);
+}
+
+.badge-unchanged {
+    background: rgba(107, 114, 128, 0.15);
+    color: var(--unchanged-color);
+}
+
+/* ===== Delta Colors ===== */
+.delta-positive { color: var(--increased-color); }
+.delta-negative { color: var(--decreased-color); }
+.delta-zero { color: var(--unchanged-color); }
+
+/* ===== Path Cell ===== */
+.path-cell {
+    max-width: 400px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    font-size: 12px;
+    direction: rtl;
+    text-align: left;
+}
+
+.path-cell .dir-icon {
+    margin-right: 4px;
+    opacity: 0.6;
+}
+
+/* ===== Pagination ===== */
+.pagination {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 12px;
+    border-top: 1px solid var(--border);
+}
+
+.pagination button {
+    padding: 4px 10px;
+    font-size: 12px;
+}
+
+.pagination .page-info {
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+/* ===== Empty State ===== */
+.empty-state {
+    text-align: center;
+    padding: 60px 20px;
+    color: var(--text-secondary);
+}
+
+.empty-state .empty-icon {
+    font-size: 48px;
+    margin-bottom: 16px;
+    opacity: 0.5;
+}
+
+.empty-state h3 {
+    font-size: 18px;
+    margin-bottom: 8px;
+    color: var(--text-primary);
+}
+
+/* ===== Toast ===== */
+.toast-container {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    z-index: 9999;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.toast {
+    padding: 12px 20px;
+    border-radius: 8px;
+    font-size: 14px;
+    animation: slideIn 0.3s ease;
+    box-shadow: var(--shadow);
+    max-width: 400px;
+}
+
+.toast-success { background: #166534; color: #bbf7d0; border: 1px solid #22c55e; }
+.toast-error { background: #7f1d1d; color: #fecaca; border: 1px solid #ef4444; }
+.toast-info { background: #1e3a5f; color: #bfdbfe; border: 1px solid #3b82f6; }
+
+@keyframes slideIn {
+    from { transform: translateX(100%); opacity: 0; }
+    to { transform: translateX(0); opacity: 1; }
+}
+
+/* ===== Scrollbar ===== */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-secondary); }
+
+/* ===== Responsive ===== */
+@media (max-width: 900px) {
+    .main-grid {
+        grid-template-columns: 1fr;
+    }
+    .summary-row {
+        grid-template-columns: repeat(3, 1fr);
+    }
+}
+
+@media (max-width: 600px) {
+    header { flex-direction: column; align-items: flex-start; gap: 12px; }
+    .control-row { flex-direction: column; align-items: stretch; }
+    .summary-row { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* ===== Tooltip ===== */
+.tooltip {
+    position: relative;
+}
+
+.tooltip::after {
+    content: attr(data-tooltip);
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s;
+}
+
+.tooltip:hover::after {
+    opacity: 1;
+}
+
+/* ===== Tree View ===== */
+.tree-toggle {
+    cursor: pointer;
+    user-select: none;
+    display: inline-block;
+    width: 16px;
+    text-align: center;
+    font-size: 10px;
+    color: var(--text-secondary);
+    transition: color 0.2s;
+}
+
+.tree-toggle:hover {
+    color: var(--accent-blue);
+}
+
+.tree-toggle-spacer {
+    cursor: default;
+    visibility: hidden;
+}
+
+</style>
+</head>
+<body>
+<div class="app-container">
+    <!-- Header -->
+    <header>
+        <div class="logo">
+            <div class="logo-icon">DD</div>
+            <div>
+                <h1>DiskDelta</h1>
+                <span>NTFS MFT 扫描与差异比较</span>
+            </div>
+        </div>
+        <div class="header-right">
+            <div class="status-indicator">
+                <span class="status-dot"></span>
+                <span id="serverStatus">服务运行中</span>
+            </div>
+            <button class="btn btn-outline btn-sm" onclick="exportCSV()">📥 导出 CSV</button>
+        </div>
+    </header>
+
+    <!-- Main Grid -->
+    <div class="main-grid">
+        <!-- Left Sidebar -->
+        <div class="sidebar">
+            <!-- Scan Controls -->
+            <div class="sidebar-card">
+                <div class="card-title"><span class="icon">📡</span> 扫描控制</div>
+                <div class="control-row" style="margin-bottom:12px">
+                    <label>盘符：</label>
+                    <select id="driveSelect">
+                        <option value="C">C:</option>
+                        <option value="D">D:</option>
+                        <option value="E">E:</option>
+                        <option value="F">F:</option>
+                    </select>
+                </div>
+                <button class="btn btn-primary" id="scanBtn" onclick="startScan()">
+                    🔍 开始扫描
+                </button>
+                <div class="progress-container" id="progressContainer">
+                    <div class="progress-bar-bg">
+                        <div class="progress-bar-fill" id="progressFill"></div>
+                    </div>
+                    <div class="progress-text">
+                        <span id="progressLabel">扫描中...</span>
+                        <span id="progressPercent">0%</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Snapshots -->
+            <div class="sidebar-card">
+                <div class="card-title"><span class="icon">📸</span> 扫描快照</div>
+                <div id="snapshotList" class="snapshot-list">
+                    <div class="empty-state" style="padding:20px">
+                        <p style="font-size:13px;color:var(--text-secondary)">暂无快照</p>
+                    </div>
+                </div>
+                <div style="margin-top:10px;display:flex;gap:4px">
+                    <button class="btn btn-outline btn-sm" onclick="refreshSnapshots()">🔄 刷新</button>
+                    <button class="btn btn-outline btn-sm" onclick="deleteSelectedSnapshots()" style="color:var(--accent-red)">🗑 删除</button>
+                </div>
+            </div>
+
+            <!-- Diff Controls -->
+            <div class="sidebar-card">
+                <div class="card-title"><span class="icon">🔀</span> 差异比较</div>
+                <div style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">
+                    勾选两个快照进行对比
+                </div>
+                <div class="control-row" style="margin-bottom:8px">
+                    <label>快照1：</label>
+                    <span id="snap1Label" style="font-size:13px;color:var(--text-secondary)">未选择</span>
+                </div>
+                <div class="control-row" style="margin-bottom:12px">
+                    <label>快照2：</label>
+                    <span id="snap2Label" style="font-size:13px;color:var(--text-secondary)">未选择</span>
+                </div>
+                <button class="btn btn-success" id="diffBtn" onclick="computeDiff()" disabled>
+                    🔄 开始对比
+                </button>
+                <button class="btn btn-primary" id="browseBtn" onclick="browseSnapshot()" style="margin-top:8px;display:none">
+                    📂 浏览快照
+                </button>
+            </div>
+        </div>
+
+        <!-- Right Content -->
+        <div class="main-content">
+            <!-- Summary -->
+            <div class="card" id="summaryCard" style="display:none">
+                <div class="card-title"><span class="icon">📊</span> 差异摘要</div>
+                <div class="summary-row" id="summaryRow">
+                    <div class="stat-card blue">
+                        <div class="stat-value" id="statTotal">0</div>
+                        <div class="stat-label">总路径数</div>
+                    </div>
+                    <div class="stat-card green">
+                        <div class="stat-value" id="statNew">0</div>
+                        <div class="stat-label">新增</div>
+                    </div>
+                    <div class="stat-card red">
+                        <div class="stat-value" id="statDeleted">0</div>
+                        <div class="stat-label">删除</div>
+                    </div>
+                    <div class="stat-card yellow">
+                        <div class="stat-value" id="statIncreased">0</div>
+                        <div class="stat-label">增大</div>
+                    </div>
+                    <div class="stat-card purple">
+                        <div class="stat-value" id="statDecreased">0</div>
+                        <div class="stat-label">减小</div>
+                    </div>
+                    <div class="stat-card" style="background:var(--bg-secondary)">
+                        <div class="stat-value" id="statDelta" style="color:var(--accent-yellow)">0</div>
+                        <div class="stat-label">总变化量</div>
+                    </div>
+                </div>
+                <div style="font-size:13px;color:var(--text-secondary)" id="snapshotInfo">
+                    对比时间段：<span id="timeRange1">-</span> → <span id="timeRange2">-</span>
+                </div>
+            </div>
+
+            <!-- Results Table -->
+            <div class="card">
+                <div class="card-title"><span class="icon">📋</span> 对比结果</div>
+
+                <!-- Filter Bar -->
+                <div class="filter-bar">
+                    <div class="btn-group">
+                        <button class="filter-btn active" data-filter="all" onclick="setFilter('all',this)">全部</button>
+                        <button class="filter-btn" data-filter="new" onclick="setFilter('new',this)">新增</button>
+                        <button class="filter-btn" data-filter="deleted" onclick="setFilter('deleted',this)">删除</button>
+                        <button class="filter-btn" data-filter="increased" onclick="setFilter('increased',this)">增大</button>
+                        <button class="filter-btn" data-filter="decreased" onclick="setFilter('decreased',this)">减小</button>
+                        <button class="filter-btn" data-filter="unchanged" onclick="setFilter('unchanged',this)">不变</button>
+                    </div>
+                    <input type="text" class="search-input" id="searchInput"
+                           placeholder="🔍 搜索路径..." oninput="onSearch(this.value)">
+                    <select id="pageSizeSelect" onchange="onPageSizeChange(this.value)" style="width:80px">
+                        <option value="50">50条/页</option>
+                        <option value="100" selected>100条/页</option>
+                        <option value="500">500条/页</option>
+                        <option value="0">全部</option>
+                    </select>
+                </div>
+
+                <!-- Table -->
+                <div class="table-container" id="tableContainer">
+                    <div class="empty-state" id="emptyState">
+                        <div class="empty-icon">📂</div>
+                        <h3>尚无对比数据</h3>
+                        <p>请先在左侧选择两个快照，点击「开始对比」</p>
+                    </div>
+                    <table id="resultTable" style="display:none">
+                        <thead id="tableHead">
+                            <tr>
+                                <th>路径</th>
+                                <th id="thSize1">第一次大小</th>
+                                <th id="thSize2">第二次大小</th>
+                                <th id="thDelta">变化量</th>
+                                <th>状态</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tableBody"></tbody>
+                    </table>
+                </div>
+
+                <!-- Pagination -->
+                <div class="pagination" id="pagination" style="display:none">
+                    <button class="btn btn-outline btn-sm" onclick="goPage(0)">⟪</button>
+                    <button class="btn btn-outline btn-sm" onclick="goPage(currentPage-1)">⟨</button>
+                    <span class="page-info" id="pageInfo">第 1/1 页</span>
+                    <button class="btn btn-outline btn-sm" onclick="goPage(currentPage+1)">⟩</button>
+                    <button class="btn btn-outline btn-sm" onclick="goPage(totalPages-1)">⟫</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Toast Container -->
+<div class="toast-container" id="toastContainer"></div>
+
+<script>
+// ============================================================
+// State
+// ============================================================
+const API_BASE = 'http://127.0.0.1:45678';
+let allEntries = [];
+let filteredEntries = [];
+let displayedEntries = [];
+let currentPage = 0;
+let totalPages = 1;
+let pageSize = 100;
+let currentFilter = 'all';
+let searchQuery = '';
+let sortField = 'size_delta';
+let sortDesc = true;
+let selectedSnapshots = new Set();
+let snapshotData = [];
+let diffData = null;
+
+// ============================================================
+// Utility
+// ============================================================
+function formatSize(bytes) {
+    if (bytes === 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+    const abs = Math.abs(bytes);
+    let size = abs;
+    let idx = 0;
+    while (size >= 1024 && idx < 5) { size /= 1024; idx++; }
+    const sign = bytes < 0 ? '-' : '+';
+    return `${sign}${size.toFixed(2)} ${units[idx]}`;
+}
+
+function formatSizeAbsolute(bytes) {
+    if (bytes === 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+    let size = bytes;
+    let idx = 0;
+    while (size >= 1024 && idx < 5) { size /= 1024; idx++; }
+    return `${size.toFixed(2)} ${units[idx]}`;
+}
+
+function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+}
+
+function showToast(message, type = 'info') {
+    const container = document.getElementById('toastContainer');
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${type}`;
+    toast.textContent = message;
+    container.appendChild(toast);
+    setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transition = 'opacity 0.3s';
+        setTimeout(() => toast.remove(), 300);
+    }, 3000);
+}
+
+// ============================================================
+// API Calls
+// ============================================================
+async function apiGet(path) {
+    const resp = await fetch(API_BASE + path);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    return resp.json();
+}
+
+async function apiPost(path, body = {}) {
+    const resp = await fetch(API_BASE + path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    return resp.json();
+}
+
+// ============================================================
+// Snapshot Management
+// ============================================================
+async function refreshSnapshots() {
+    try {
+        const data = await apiGet('/api/snapshots');
+        snapshotData = data.snapshots || [];
+        renderSnapshotList();
+    } catch (e) {
+        console.error('Failed to load snapshots:', e);
+    }
+}
+
+function renderSnapshotList() {
+    const container = document.getElementById('snapshotList');
+    if (snapshotData.length === 0) {
+        container.innerHTML = `
+            <div class="empty-state" style="padding:20px">
+                <p style="font-size:13px;color:var(--text-secondary)">暂无快照</p>
+            </div>`;
+        return;
+    }
+
+    container.innerHTML = snapshotData.map((s, idx) => {
+        const checked = selectedSnapshots.has(idx) ? 'checked' : '';
+        const ts = s.timestamp || '未知时间';
+        const displayTs = ts.length > 19 ? ts.substring(0, 19) : ts;
+        return `
+            <div class="snapshot-item ${selectedSnapshots.has(idx) ? 'selected' : ''}">
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;flex:1">
+                    <input type="checkbox" class="snapshot-checkbox"
+                           data-index="${idx}" ${checked}
+                           onchange="toggleSnapshot(${idx}, this.checked)">
+                    <span>📸 #${idx}</span>
+                    <span class="ts">${escapeHtml(displayTs)}</span>
+                </label>
+            </div>`;
+    }).join('');
+
+    updateDiffButton();
+}
+
+function toggleSnapshot(idx, checked) {
+    const maxSelections = 2;
+    if (checked && selectedSnapshots.size >= maxSelections) {
+        showToast('最多只能选择两个快照进行对比', 'error');
+        const cb = document.querySelector(`.snapshot-checkbox[data-index="${idx}"]`);
+        if (cb) cb.checked = false;
+        return;
+    }
+
+    if (checked) {
+        selectedSnapshots.add(idx);
+    } else {
+        selectedSnapshots.delete(idx);
+    }
+    renderSnapshotList();
+    updateBrowseButton();
+}
+
+function updateBrowseButton() {
+    const browseBtn = document.getElementById('browseBtn');
+    if (selectedSnapshots.size === 1) {
+        browseBtn.style.display = '';
+    } else {
+        browseBtn.style.display = 'none';
+    }
+}
+
+function updateDiffButton() {
+    const btn = document.getElementById('diffBtn');
+    const snap1 = document.getElementById('snap1Label');
+    const snap2 = document.getElementById('snap2Label');
+
+    const arr = Array.from(selectedSnapshots).sort((a, b) => a - b);
+
+    if (arr.length === 2) {
+        btn.disabled = false;
+        const ts1 = snapshotData[arr[0]]?.timestamp?.substring(0, 19) || `#${arr[0]}`;
+        const ts2 = snapshotData[arr[1]]?.timestamp?.substring(0, 19) || `#${arr[1]}`;
+        snap1.textContent = `#${arr[0]} (${escapeHtml(ts1)})`;
+        snap2.textContent = `#${arr[1]} (${escapeHtml(ts2)})`;
+    } else if (arr.length === 1) {
+        btn.disabled = true;
+        snap1.textContent = `#${arr[0]}`;
+        snap2.textContent = '请选择第二个快照';
+    } else {
+        btn.disabled = true;
+        snap1.textContent = '未选择';
+        snap2.textContent = '未选择';
+    }
+}
+
+async function deleteSelectedSnapshots() {
+    if (selectedSnapshots.size === 0) {
+        showToast('请先选择要删除的快照', 'error');
+        return;
+    }
+    if (!confirm('确定要删除选中的快照吗？此操作不可恢复。')) return;
+
+    // Note: The HTTP API doesn't have delete endpoints.
+    // For simplicity, we'll just notify the user.
+    showToast('请在 data 目录下手动删除对应的 .json 文件', 'info');
+}
+
+// ============================================================
+// Scanning
+// ============================================================
+let scanRunning = false;
+
+async function startScan() {
+    if (scanRunning) return;
+
+    const drive = document.getElementById('driveSelect').value;
+    const btn = document.getElementById('scanBtn');
+    const progress = document.getElementById('progressContainer');
+    const fill = document.getElementById('progressFill');
+    const label = document.getElementById('progressLabel');
+    const percent = document.getElementById('progressPercent');
+
+    scanRunning = true;
+    btn.disabled = true;
+    progress.classList.add('active');
+    fill.style.width = '10%';
+    label.textContent = `正在扫描 ${drive}: 盘...`;
+    percent.textContent = '10%';
+
+    showToast(`开始扫描 ${drive}: 盘，这可能需要几分钟...`, 'info');
+
+    // Simulate progress updates
+    let prog = 10;
+    const progInterval = setInterval(() => {
+        if (prog < 90) {
+            prog += Math.random() * 8;
+            if (prog > 90) prog = 90;
+            fill.style.width = prog + '%';
+            percent.textContent = Math.round(prog) + '%';
+        }
+    }, 2000);
+
+    try {
+        const result = await apiPost('/api/scan', { drive });
+        clearInterval(progInterval);
+        fill.style.width = '100%';
+        percent.textContent = '100%';
+        label.textContent = `扫描完成！共 ${result.entry_count || 0} 条记录`;
+
+        showToast(`扫描完成！共 ${result.entry_count || 0} 条记录`, 'success');
+        await refreshSnapshots();
+    } catch (e) {
+        clearInterval(progInterval);
+        label.textContent = '扫描失败';
+        fill.style.width = '0%';
+        showToast(`扫描失败：${e.message}。请确认以管理员身份运行程序。`, 'error');
+    }
+
+    scanRunning = false;
+    btn.disabled = false;
+    setTimeout(() => {
+        progress.classList.remove('active');
+    }, 3000);
+}
+
+// ============================================================
+// Diff Computation
+// ============================================================
+async function computeDiff() {
+    const arr = Array.from(selectedSnapshots).sort((a, b) => a - b);
+    if (arr.length !== 2) {
+        showToast('请选择两个快照进行对比', 'error');
+        return;
+    }
+
+    const btn = document.getElementById('diffBtn');
+    btn.disabled = true;
+    btn.textContent = '⏳ 计算中...';
+
+    try {
+        diffData = await apiPost('/api/diff', {
+            snapshot1: arr[0],
+            snapshot2: arr[1]
+        });
+
+        allEntries = diffData.entries || [];
+        currentMode = 'diff';
+        renderDiff();
+        showToast(`差异比较完成！共 ${allEntries.length} 条变化`, 'success');
+    } catch (e) {
+        showToast(`对比失败：${e.message}`, 'error');
+    }
+
+    btn.disabled = false;
+    btn.textContent = '🔄 开始对比';
+}
+
+// ============================================================
+// Single snapshot browsing (tree view)
+// ============================================================
+let currentMode = 'diff'; // 'diff' or 'browse'
+
+async function browseSnapshot() {
+    const arr = Array.from(selectedSnapshots);
+    if (arr.length !== 1) {
+        showToast('请选择一个快照进行浏览', 'error');
+        return;
+    }
+
+    try {
+        const data = await apiGet(`/api/snapshot/${arr[0]}?sort=size&order=desc`);
+        allEntries = (data.entries || []).map(e => ({
+            path: e.path,
+            size_before: 0,
+            size_after: e.size,
+            size_delta: e.size,
+            status: 'unchanged',
+            is_directory: e.is_directory
+        }));
+        currentMode = 'browse';
+        document.getElementById('summaryCard').style.display = 'none';
+        buildTreeData(allEntries, false);
+        renderTable();
+        document.getElementById('pagination').style.display = 'none';
+        showToast(`快照 #${arr[0]} 加载完成，共 ${allEntries.length} 条`, 'success');
+    } catch (e) {
+        showToast(`加载失败：${e.message}`, 'error');
+    }
+}
+
+// ============================================================
+// Tree data structure (flat entries -> nested tree)
+// ============================================================
+let treeRoot = null;
+let treeExpanded = new Set(); // track expanded paths
+
+// (buildTreeData is defined later)
+
+// Toggle a tree node expand/collapse
+function toggleTreeNode(path) {
+    if (treeExpanded.has(path)) {
+        treeExpanded.delete(path);
+    } else {
+        treeExpanded.add(path);
+    }
+    renderTable();
+}
+
+// Tree toggle event delegation
+document.addEventListener('click', function(e) {
+    const toggle = e.target.closest('.tree-toggle');
+    if (toggle && !toggle.classList.contains('tree-toggle-spacer')) {
+        const path = decodeURIComponent(toggle.getAttribute('data-path'));
+        if (path) {
+            toggleTreeNode(path);
+        }
+    }
+});
+
+// ============================================================
+// Rendering
+// ============================================================
+function renderDiff() {
+    if (!diffData || !allEntries.length) return;
+
+    // Show summary
+    document.getElementById('summaryCard').style.display = 'block';
+    const summary = diffData.summary || {};
+    document.getElementById('statTotal').textContent = summary.total_paths || 0;
+    document.getElementById('statNew').textContent = summary.new_paths || 0;
+    document.getElementById('statDeleted').textContent = summary.deleted_paths || 0;
+    document.getElementById('statIncreased').textContent = summary.increased || 0;
+    document.getElementById('statDecreased').textContent = summary.decreased || 0;
+    document.getElementById('statDelta').textContent = formatSize(summary.total_size_delta || 0);
+    document.getElementById('timeRange1').textContent =
+        (diffData.snapshot1_timestamp || '').substring(0, 19) || '-';
+    document.getElementById('timeRange2').textContent =
+        (diffData.snapshot2_timestamp || '').substring(0, 19) || '-';
+
+    buildTreeData(allEntries, true); // true = diff mode
+    renderTable();
+}
+
+// Unified tree building for both browse and diff
+function buildTreeData(entries, isDiffMode) {
+    treeRoot = { name: '(root)', path: '', children: [], size: 0, is_directory: true, depth: -1, expanded: true };
+    const map = { '': treeRoot };
+
+    for (const e of entries) {
+        const parts = e.path.replace(/\\/g, '/').split('/').filter(p => p);
+        let currentPath = '';
+        for (let i = 0; i < parts.length; i++) {
+            const parentPath = currentPath;
+            currentPath = currentPath ? currentPath + '/' + parts[i] : parts[i];
+            if (!map[currentPath]) {
+                const isLast = (i === parts.length - 1);
+                map[currentPath] = {
+                    name: parts[i],
+                    path: '\\' + currentPath.replace(/\//g, '\\'),
+                    children: [],
+                    size: isLast ? e.size_after : 0,
+                    is_directory: isLast ? e.is_directory : true,
+                    depth: i,
+                    size_before: isLast ? e.size_before : 0,
+                    size_delta: isLast ? e.size_delta : 0,
+                    status: isLast ? e.status : 'unchanged',
+                    expanded: false
+                };
+                map[parentPath].children.push(map[currentPath]);
+            }
+        }
+    }
+
+    // Calculate recursive sizes for directories
+    function calcSizes(node) {
+        if (!node.is_directory) return node.size;
+        let total = 0;
+        for (const child of node.children) total += calcSizes(child);
+        node.size = total;
+        return total;
+    }
+    calcSizes(treeRoot);
+
+    // Calculate recursive deltas for directories
+    function calcDeltas(node) {
+        if (node.children.length === 0) return node.size_delta;
+        let total = 0;
+        for (const child of node.children) total += calcDeltas(child);
+        node.size_delta = total;
+        return total;
+    }
+    calcDeltas(treeRoot);
+
+    // Calculate recursive size_before for directories
+    function calcSizeBefores(node) {
+        if (node.children.length === 0) return node.size_before;
+        let total = 0;
+        for (const child of node.children) total += calcSizeBefores(child);
+        node.size_before = total;
+        return total;
+    }
+    calcSizeBefores(treeRoot);
+
+    // Sort children: dirs first, then by delta desc, then size desc
+    function sortChildren(node) {
+        node.children.sort((a, b) => {
+            if (a.is_directory !== b.is_directory) return a.is_directory ? -1 : 1;
+            if (isDiffMode) {
+                // In diff mode, sort by delta desc
+                const deltaCmp = (b.size_delta || 0) - (a.size_delta || 0);
+                if (deltaCmp !== 0) return deltaCmp;
+            }
+            return (b.size || 0) - (a.size || 0);
+        });
+        for (const child of node.children) sortChildren(child);
+    }
+    sortChildren(treeRoot);
+
+    treeExpanded.clear();
+}
+
+function applyFiltersAndRender() {
+    // In tree mode, just re-render (search/filter handled at tree level)
+    renderTable();
+}
+
+function renderTable() {
+    const table = document.getElementById('resultTable');
+    const empty = document.getElementById('emptyState');
+    const tbody = document.getElementById('tableBody');
+    const isDiff = (currentMode === 'diff');
+
+    // Update column headers based on mode
+    document.getElementById('thSize1').textContent = isDiff ? '第一次大小' : '';
+    document.getElementById('thSize2').textContent = isDiff ? '第二次大小' : '大小';
+    document.getElementById('thDelta').textContent = isDiff ? '变化量' : '';
+
+    if (!treeRoot || treeRoot.children.length === 0) {
+        table.style.display = 'none';
+        empty.style.display = 'block';
+        empty.innerHTML = `
+            <div class="empty-icon">🔍</div>
+            <h3>无数据</h3>
+            <p>请先扫描或选择快照</p>`;
+        return;
+    }
+
+    table.style.display = '';
+    empty.style.display = 'none';
+    tbody.innerHTML = '';
+
+    // Render tree with mode-appropriate columns
+    function renderNode(container, nodes) {
+        for (const node of nodes) {
+            const tr = document.createElement('tr');
+            if (isDiff) tr.className = node.status;
+
+            const hasChildren = node.children.length > 0;
+            const isExpanded = treeExpanded.has(node.path);
+            const icon = node.is_directory ? (isExpanded ? '📂' : '📁') : '📄';
+            const expandBtn = hasChildren
+                ? `<span class="tree-toggle" data-path="${encodeURIComponent(node.path)}">${isExpanded ? '▼' : '▶'}</span> `
+                : '<span class="tree-toggle tree-toggle-spacer"> </span> ';
+
+            const indent = node.depth >= 0 ? node.depth * 20 : 0;
+
+            const statusMap = {
+                'new': '新增', 'deleted': '删除', 'increased': '增大',
+                'decreased': '减小', 'unchanged': '不变'
+            };
+
+            if (isDiff) {
+                // Diff mode: show delta
+                let deltaClass = 'delta-zero';
+                let deltaDisplay = '0 B';
+                if (node.size_delta > 0) { deltaClass = 'delta-positive'; deltaDisplay = '+' + formatSizeAbsolute(node.size_delta); }
+                else if (node.size_delta < 0) { deltaClass = 'delta-negative'; deltaDisplay = '-' + formatSizeAbsolute(Math.abs(node.size_delta)); }
+
+                tr.innerHTML = `
+                    <td class="path-cell" style="padding-left:${indent}px">
+                        ${expandBtn}<span class="dir-icon">${icon}</span>${escapeHtml(node.name || node.path)}
+                    </td>
+                    <td>${formatSizeAbsolute(node.size_before)}</td>
+                    <td>${formatSizeAbsolute(node.size)}</td>
+                    <td class="${deltaClass}">${deltaDisplay}</td>
+                    <td><span class="badge badge-${node.status}">${statusMap[node.status] || node.status}</span></td>`;
+            } else {
+                // Browse mode: just show size
+                tr.innerHTML = `
+                    <td class="path-cell" style="padding-left:${indent}px">
+                        ${expandBtn}<span class="dir-icon">${icon}</span>${escapeHtml(node.name || node.path)}
+                    </td>
+                    <td>${formatSizeAbsolute(node.size)}</td>
+                    <td></td>
+                    <td></td>
+                    <td>${node.is_directory ? `<span class="badge badge-unchanged">${node.children.length} 项</span>` : ''}</td>`;
+            }
+
+            container.appendChild(tr);
+
+            if (hasChildren && isExpanded) {
+                renderNode(container, node.children);
+            }
+        }
+    }
+
+    // Only show children of root (toplevel dirs)
+    // Summary bar is shown separately for diff mode
+    renderNode(tbody, treeRoot.children);
+}
+
+function renderPagination() {
+    const pagination = document.getElementById('pagination');
+    const pageInfo = document.getElementById('pageInfo');
+
+    if (totalPages <= 1) {
+        pagination.style.display = 'none';
+        return;
+    }
+
+    pagination.style.display = 'flex';
+    pageInfo.textContent = `第 ${currentPage + 1}/${totalPages} 页 (共 ${filteredEntries.length} 条)`;
+}
+
+function goPage(page) {
+    if (page < 0 || page >= totalPages) return;
+    currentPage = page;
+    applyFiltersAndRender();
+}
+
+// ============================================================
+// Filters & Sorting
+// ============================================================
+function setFilter(filter, btn) {
+    currentFilter = filter;
+    currentPage = 0;
+
+    document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+    if (btn) btn.classList.add('active');
+
+    applyFiltersAndRender();
+}
+
+function onSearch(query) {
+    searchQuery = query.trim();
+    currentPage = 0;
+    applyFiltersAndRender();
+}
+
+function onPageSizeChange(size) {
+    pageSize = parseInt(size) || 0;
+    currentPage = 0;
+    applyFiltersAndRender();
+}
+
+function sortBy(field) {
+    if (sortField === field) {
+        sortDesc = !sortDesc;
+    } else {
+        sortField = field;
+        sortDesc = true;
+    }
+
+    // Update arrow indicators
+    document.querySelectorAll('th .sort-arrow').forEach(el => {
+        el.textContent = '↕';
+        el.parentElement.classList.remove('sorted');
+    });
+    const ths = document.querySelectorAll('th');
+    const fieldMap = { 'path': 0, 'size_before': 1, 'size_after': 2, 'size_delta': 3 };
+    const idx = fieldMap[field];
+    if (idx !== undefined && ths[idx]) {
+        ths[idx].classList.add('sorted');
+        ths[idx].querySelector('.sort-arrow').textContent = sortDesc ? '↓' : '↑';
+    }
+
+    applyFiltersAndRender();
+}
+
+// ============================================================
+// Export
+// ============================================================
+async function exportCSV() {
+    if (!diffData) {
+        showToast('请先进行差异比较', 'error');
+        return;
+    }
+
+    const arr = Array.from(selectedSnapshots).sort((a, b) => a - b);
+    if (arr.length !== 2) {
+        showToast('请选择用于对比的两个快照', 'error');
+        return;
+    }
+
+    try {
+        const resp = await fetch(`${API_BASE}/api/export/${arr[0]}/${arr[1]}`);
+        if (!resp.ok) throw new Error('Export failed');
+
+        const blob = await resp.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `diskdelta_diff_${arr[0]}_${arr[1]}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+
+        showToast('CSV 导出成功！', 'success');
+    } catch (e) {
+        showToast(`导出失败：${e.message}`, 'error');
+    }
+}
+
+// ============================================================
+// Initialization
+// ============================================================
+document.addEventListener('DOMContentLoaded', async () => {
+    // Check server status
+    try {
+        const status = await apiGet('/api/status');
+        document.getElementById('serverStatus').textContent = '服务运行中 ✓';
+    } catch (e) {
+        document.getElementById('serverStatus').textContent = '服务未连接 ✗';
+        document.querySelector('.status-dot').style.background = 'var(--accent-red)';
+        showToast('无法连接到后端服务，请确认 DiskDelta 已启动', 'error');
+    }
+
+    await refreshSnapshots();
+});
+</script>
+</body>
+</html>
