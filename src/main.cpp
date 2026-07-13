@@ -507,6 +507,32 @@ static Response HandleRequest(
         return JsonOK(json.str());
     }
 
+    // GET /api/open?path=... - open file/folder in Explorer
+    if (base_path == "/api/open" && method == "GET") {
+        std::string drive = "C";
+        auto it = query.find("drive");
+        if (it != query.end()) drive = it->second;
+
+        it = query.find("path");
+        if (it != query.end()) {
+            std::string rel_path = it->second;
+            // Build full path: D:\Users\... (with drive letter)
+            std::string full_path = drive + ":" + rel_path;
+            // Convert forward slashes to backslashes
+            for (auto& c : full_path) if (c == '/') c = '\\';
+            // explorer /select to highlight the item (works for files and folders)
+            std::wstring wfull = Utf8ToWide(full_path);
+            std::wstring cmd = L"explorer /select,\"" + wfull + L"\"";
+            PROCESS_INFORMATION pi = {};
+            STARTUPINFOW si = { sizeof(si) };
+            CreateProcessW(nullptr, &cmd[0], nullptr, nullptr, FALSE,
+                           CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+        }
+        return JsonOK("{\"success\": true}\n");
+    }
+
     // === Static file serving (web directory) ===
     {
         std::string serve_path = base_path;

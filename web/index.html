@@ -513,8 +513,6 @@ tr.unchanged td { border-left: 3px solid var(--unchanged-color); }
     white-space: nowrap;
     font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
     font-size: 12px;
-    direction: rtl;
-    text-align: left;
 }
 
 .path-cell .dir-icon {
@@ -657,6 +655,29 @@ tr.unchanged td { border-left: 3px solid var(--unchanged-color); }
 .tree-toggle-spacer {
     cursor: default;
     visibility: hidden;
+}
+
+/* ===== Open button ===== */
+.open-btn {
+    cursor: pointer;
+    font-size: 14px;
+    opacity: 0.6;
+    transition: opacity 0.2s, transform 0.2s;
+    display: inline-block;
+}
+
+.open-btn:hover {
+    opacity: 1;
+    transform: scale(1.2);
+}
+
+/* ===== Tree prefix ===== */
+.tree-prefix {
+    font-family: 'Consolas', 'Courier New', monospace;
+    color: var(--text-secondary);
+    white-space: pre;
+    letter-spacing: 0;
+    font-size: 13px;
 }
 
 </style>
@@ -823,6 +844,7 @@ tr.unchanged td { border-left: 3px solid var(--unchanged-color); }
                                 <th id="thSize2">第二次大小</th>
                                 <th id="thDelta">变化量</th>
                                 <th>状态</th>
+                                <th>操作</th>
                             </tr>
                         </thead>
                         <tbody id="tableBody"></tbody>
@@ -1182,6 +1204,38 @@ document.addEventListener('click', function(e) {
     }
 });
 
+// Copy path to clipboard
+function copyPath(btn) {
+    const row = btn.closest('tr');
+    if (!row) return;
+    const path = row.getAttribute('data-path');
+    const drive = document.getElementById('driveSelect').value;
+    const fullPath = drive + ':' + path;
+    
+    // Try modern clipboard API first
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(fullPath).then(() => {
+            showToast('已复制: ' + fullPath, 'success');
+        }).catch(() => {
+            fallbackCopy(fullPath);
+        });
+    } else {
+        fallbackCopy(fullPath);
+    }
+}
+
+function fallbackCopy(text) {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    showToast('已复制: ' + text, 'success');
+}
+
 // ============================================================
 // Rendering
 // ============================================================
@@ -1271,9 +1325,12 @@ function buildTreeData(entries, isDiffMode) {
         node.children.sort((a, b) => {
             if (a.is_directory !== b.is_directory) return a.is_directory ? -1 : 1;
             if (isDiffMode) {
-                // In diff mode, sort by delta desc
-                const deltaCmp = (b.size_delta || 0) - (a.size_delta || 0);
-                if (deltaCmp !== 0) return deltaCmp;
+                // Sort: positive delta first, negative second, unchanged last
+                const aPos = a.size_delta > 0 ? 0 : a.size_delta < 0 ? 1 : 2;
+                const bPos = b.size_delta > 0 ? 0 : b.size_delta < 0 ? 1 : 2;
+                if (aPos !== bPos) return aPos - bPos;
+                // Within same group, sort by delta magnitude desc
+                return Math.abs(b.size_delta) - Math.abs(a.size_delta);
             }
             return (b.size || 0) - (a.size || 0);
         });
@@ -1315,9 +1372,12 @@ function renderTable() {
     tbody.innerHTML = '';
 
     // Render tree with mode-appropriate columns
-    function renderNode(container, nodes) {
-        for (const node of nodes) {
+    function renderNode(container, nodes, isLastList) {
+        isLastList = isLastList || [];
+        for (let idx = 0; idx < nodes.length; idx++) {
+            const node = nodes[idx];
             const tr = document.createElement('tr');
+            tr.setAttribute('data-path', node.path);
             if (isDiff) tr.className = node.status;
 
             const hasChildren = node.children.length > 0;
@@ -1327,50 +1387,64 @@ function renderTable() {
                 ? `<span class="tree-toggle" data-path="${encodeURIComponent(node.path)}">${isExpanded ? '▼' : '▶'}</span> `
                 : '<span class="tree-toggle tree-toggle-spacer"> </span> ';
 
-            const indent = node.depth >= 0 ? node.depth * 20 : 0;
+            const isLast = (idx === nodes.length - 1);
+            const prefix = isLast ? '└ ' : '├ ';
+
+            // Build the tree prefix string: one character per depth level
+            let prefixStr = '';
+            for (let d = 0; d < node.depth; d++) {
+                if (d < isLastList.length && isLastList[d]) {
+                    prefixStr += '  '; // parent is last, blank space
+                } else {
+                    prefixStr += '│ ';
+                }
+            }
+            if (node.depth > 0) {
+                prefixStr += prefix;
+            }
+
+            const copyBtn = `<span class="open-btn" title="点击复制完整路径" onclick="copyPath(this)">📋</span>`;
 
             const statusMap = {
                 'new': '新增', 'deleted': '删除', 'increased': '增大',
                 'decreased': '减小', 'unchanged': '不变'
             };
 
+            const nameDisplay = `<span class="tree-prefix">${escapeHtml(prefixStr)}</span>${expandBtn}<span class="dir-icon">${icon}</span>${escapeHtml(node.name || node.path)}`;
+
             if (isDiff) {
-                // Diff mode: show delta
                 let deltaClass = 'delta-zero';
                 let deltaDisplay = '0 B';
                 if (node.size_delta > 0) { deltaClass = 'delta-positive'; deltaDisplay = '+' + formatSizeAbsolute(node.size_delta); }
                 else if (node.size_delta < 0) { deltaClass = 'delta-negative'; deltaDisplay = '-' + formatSizeAbsolute(Math.abs(node.size_delta)); }
 
                 tr.innerHTML = `
-                    <td class="path-cell" style="padding-left:${indent}px">
-                        ${expandBtn}<span class="dir-icon">${icon}</span>${escapeHtml(node.name || node.path)}
-                    </td>
+                    <td class="path-cell">${nameDisplay}</td>
                     <td>${formatSizeAbsolute(node.size_before)}</td>
                     <td>${formatSizeAbsolute(node.size)}</td>
                     <td class="${deltaClass}">${deltaDisplay}</td>
-                    <td><span class="badge badge-${node.status}">${statusMap[node.status] || node.status}</span></td>`;
+                    <td><span class="badge badge-${node.status}">${statusMap[node.status] || node.status}</span></td>
+                    <td>${copyBtn}</td>`;
             } else {
-                // Browse mode: just show size
                 tr.innerHTML = `
-                    <td class="path-cell" style="padding-left:${indent}px">
-                        ${expandBtn}<span class="dir-icon">${icon}</span>${escapeHtml(node.name || node.path)}
-                    </td>
+                    <td class="path-cell">${nameDisplay}</td>
                     <td>${formatSizeAbsolute(node.size)}</td>
                     <td></td>
                     <td></td>
-                    <td>${node.is_directory ? `<span class="badge badge-unchanged">${node.children.length} 项</span>` : ''}</td>`;
+                    <td>${node.is_directory ? `<span class="badge badge-unchanged">${node.children.length} 项</span>` : ''}</td>
+                    <td>${copyBtn}</td>`;
             }
 
             container.appendChild(tr);
 
             if (hasChildren && isExpanded) {
-                renderNode(container, node.children);
+                const childLastList = [...isLastList, isLast];
+                renderNode(container, node.children, childLastList);
             }
         }
     }
 
     // Only show children of root (toplevel dirs)
-    // Summary bar is shown separately for diff mode
     renderNode(tbody, treeRoot.children);
 }
 
