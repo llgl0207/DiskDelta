@@ -712,10 +712,7 @@ tr.unchanged td { border-left: 3px solid var(--unchanged-color); }
                 <div class="control-row" style="margin-bottom:12px">
                     <label>盘符：</label>
                     <select id="driveSelect">
-                        <option value="C">C:</option>
-                        <option value="D">D:</option>
-                        <option value="E">E:</option>
-                        <option value="F">F:</option>
+                        <option value="">加载中...</option>
                     </select>
                 </div>
                 <button class="btn btn-primary" id="scanBtn" onclick="startScan()">
@@ -1554,6 +1551,25 @@ async function exportCSV() {
 // ============================================================
 // Initialization
 // ============================================================
+
+document.addEventListener('DOMContentLoaded', async () => {
+    try {
+        const response = await fetch('/api/drives');
+        const data = await response.json();
+        const select = document.getElementById('driveSelect');
+        select.innerHTML = ''; 
+        
+        data.drives.forEach(drive => {
+            const opt = document.createElement('option');
+            opt.value = drive;
+            opt.textContent = `${drive} 盘 (NTFS)`;
+            select.appendChild(opt);
+        });
+    } catch (e) {
+        console.error('获取硬盘列表失败:', e);
+    }
+});
+
 document.addEventListener('DOMContentLoaded', async () => {
     // Check server status
     try {
