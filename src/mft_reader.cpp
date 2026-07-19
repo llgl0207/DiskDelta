@@ -632,6 +632,9 @@ bool MftReader::BuildPathTree(
         if (it == parent_children.end()) continue;
 
         for (uint64_t child_record : it->second) {
+
+            if (child_record < 16) continue;
+
             auto entry_it = entry_map.find(child_record);
             if (entry_it == entry_map.end()) continue;
 

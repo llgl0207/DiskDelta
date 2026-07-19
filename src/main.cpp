@@ -249,6 +249,31 @@ static Response HandleRequest(
         return JsonOK(json.str());
     }
 
+    // GET /api/drives - 自动获取支持的NTFS驱动器
+    if (base_path == "/api/drives" && method == "GET") {
+        DWORD drives = GetLogicalDrives();
+        std::ostringstream json;
+        json << "{\n  \"drives\": [\n";
+        bool first = true;
+        for (int i = 0; i < 26; i++) {
+            if (drives & (1 << i)) {
+                char letter = 'A' + i;
+                std::string root = std::string(1, letter) + ":\\";
+                char fsName[MAX_PATH];
+                // 仅筛选 NTFS 格式的硬盘 (MFT扫描仅支持NTFS)
+                if (GetVolumeInformationA(root.c_str(), nullptr, 0, nullptr, nullptr, nullptr, fsName, MAX_PATH)) {
+                    if (strcmp(fsName, "NTFS") == 0) {
+                        if (!first) json << ",\n";
+                        json << "    \"" << letter << "\"";
+                        first = false;
+                    }
+                }
+            }
+        }
+        json << "\n  ]\n}\n";
+        return JsonOK(json.str());
+    }
+
     // GET /api/snapshots - list all snapshots
     if (base_path == "/api/snapshots" && method == "GET") {
         RefreshSnapshotList();
