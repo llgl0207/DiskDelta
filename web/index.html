@@ -1165,7 +1165,19 @@ async function browseSnapshot() {
             is_directory: e.is_directory
         }));
         currentMode = 'browse';
-        document.getElementById('summaryCard').style.display = 'none';
+        // Calculate total size from ROOT-level only (avoids double-counting recursive dirs)
+        const totalSize = data.entries
+            .filter(e => e.path.replace(/\\/g, '/').split('/').filter(Boolean).length === 1)
+            .reduce((sum, e) => sum + e.size, 0);
+        document.getElementById('summaryCard').style.display = 'block';
+        document.getElementById('statTotal').textContent = data.entry_count || data.entries.length;
+        document.getElementById('statNew').textContent = '-';
+        document.getElementById('statDeleted').textContent = '-';
+        document.getElementById('statIncreased').textContent = '-';
+        document.getElementById('statDecreased').textContent = '-';
+        document.getElementById('statDelta').textContent = formatSizeAbsolute(totalSize);
+        document.getElementById('timeRange1').textContent = (data.timestamp || '').substring(0, 19) || '-';
+        document.getElementById('timeRange2').textContent = '浏览模式';
         buildTreeData(allEntries, false);
         renderTable();
         document.getElementById('pagination').style.display = 'none';

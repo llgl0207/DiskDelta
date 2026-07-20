@@ -163,6 +163,10 @@ private:
     uint64_t    m_bytes_per_mft_record;
     uint64_t    m_mft_start_lcn;
     std::wstring m_drive_letter;
+    std::vector<DataRun> m_data_runs;  // VCN→LCN mapping for fragmented MFT
+
+    // Parse data runs from non-resident attribute
+    bool ParseDataRuns(const uint8_t* attr_start, std::vector<DataRun>& runs);
 
     // Read a single MFT record
     bool ReadMftRecord(uint64_t record_number, std::vector<uint8_t>& buffer);

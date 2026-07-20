@@ -10,6 +10,7 @@
 #include <ctime>
 #include <iostream>
 #include <winioctl.h>
+#include <unordered_map>
 
 // ============================================================
 // Debug logging - outputs to console and log file
@@ -248,7 +249,78 @@ bool MftReader::LocateMft() {
         }
     }
 
+    // Parse data runs from MFT record 0 for fragmented MFT reading
+    if (m_mft_size > 0 && m_mft_start_lcn > 0) {
+        LARGE_INTEGER rec0_off;
+        rec0_off.QuadPart = m_mft_start_lcn * m_bytes_per_cluster;
+        if (SetFilePointerEx(m_volume_handle, rec0_off, nullptr, FILE_BEGIN)) {
+            std::vector<uint8_t> rec0(m_bytes_per_mft_record);
+            DWORD br;
+            if (ReadFile(m_volume_handle, rec0.data(), (DWORD)m_bytes_per_mft_record,
+                         &br, nullptr) && br >= m_bytes_per_mft_record) {
+                if (memcmp(rec0.data(), "FILE", 4) == 0) {
+                    FILE_RECORD_HEADER* hdr = (FILE_RECORD_HEADER*)rec0.data();
+                    uint16_t aoff = hdr->attr_offset;
+                    while (aoff + sizeof(ATTR_HEADER) <= hdr->allocated_size) {
+                        ATTR_HEADER* ah = (ATTR_HEADER*)(rec0.data() + aoff);
+                        if (ah->type == 0xFFFFFFFF || ah->length == 0) break;
+                        if (ah->type == ATTR_DATA && ah->non_resident) {
+                            ParseDataRuns(rec0.data() + aoff, m_data_runs);
+                            DebugLog("LocateMft: parsed " + std::to_string(m_data_runs.size())
+                                     + " data runs");
+                            break;
+                        }
+                        aoff += ah->length;
+                    }
+                }
+            }
+        }
+    }
+
     return true;
+}
+
+// Parse NTFS data runs: encodes VCN->LCN mapping for non-resident attributes
+bool MftReader::ParseDataRuns(const uint8_t* attr_start, std::vector<DataRun>& runs) {
+    runs.clear();
+    ATTR_HEADER_NONRESIDENT* nr =
+        (ATTR_HEADER_NONRESIDENT*)(attr_start + sizeof(ATTR_HEADER));
+    const uint8_t* run_start = attr_start + nr->run_array_offset;
+    const uint8_t* run_end = attr_start + *(uint32_t*)(&attr_start[4]);
+
+    int64_t current_lcn = 0;
+    while (run_start < run_end && *run_start != 0) {
+        uint8_t header_byte = *run_start++;
+        uint8_t len_bytes = header_byte & 0x0F;
+        uint8_t off_bytes = (header_byte >> 4) & 0x0F;
+        if (len_bytes == 0 && off_bytes == 0) break;
+
+        uint64_t run_length = 0;
+        for (int i = 0; i < len_bytes && run_start < run_end; i++)
+            run_length |= ((uint64_t)(*run_start++) << (i * 8));
+
+        int64_t run_offset = 0;
+        if (off_bytes > 0 && run_start < run_end) {
+            for (int i = 0; i < off_bytes; i++)
+                run_offset |= ((int64_t)(*run_start++) << (i * 8));
+            if (off_bytes < 8 && (run_offset & ((int64_t)1 << (off_bytes * 8 - 1))))
+                for (int i = off_bytes; i < 8; i++)
+                    run_offset |= ((int64_t)0xFF << (i * 8));
+        }
+
+        current_lcn += run_offset;
+        DataRun dr;
+        dr.lcn = (run_offset == 0 && off_bytes == 0) ? -1 : current_lcn;
+        dr.length = run_length;
+        runs.push_back(dr);
+    }
+
+    uint64_t vcn = 0;
+    for (auto& r : runs) {
+        r.vcn = vcn;
+        vcn += r.length;
+    }
+    return !runs.empty();
 }
 
 bool MftReader::ReadMftRecord(uint64_t record_number, std::vector<uint8_t>& buffer) {
@@ -337,110 +409,113 @@ bool MftReader::ScanMft(std::vector<MftEntry>& entries) {
     }
 
     uint64_t num_records = m_mft_size / m_bytes_per_mft_record;
-    uint64_t mft_start_offset = m_mft_start_lcn * m_bytes_per_cluster;
-    DebugLog("ScanMft: scanning " + std::to_string(num_records) + " records (mft_size="
-             + std::to_string(m_mft_size) + ")");
-
-    // Reserve space
-    entries.reserve((size_t)std::min(num_records, (uint64_t)2000000));
-
-    // Read MFT in large chunks (8MB each) instead of record-by-record
-    const uint64_t CHUNK_SIZE = 8ULL * 1024 * 1024; // 8MB
-    std::vector<uint8_t> chunk(CHUNK_SIZE);
+    DebugLog("ScanMft: scanning " + std::to_string(num_records) + " records (runs="
+             + std::to_string(m_data_runs.size()) + ")");
+    entries.reserve((size_t)std::min(num_records, (uint64_t)3000000));
+    std::unordered_map<uint64_t, size_t> rec_index_map;
+    std::vector<MftEntry> ext_tmp;
 
     uint64_t total_valid = 0;
     uint64_t records_processed = 0;
-    uint64_t bytes_remaining = m_mft_size;
+    std::vector<uint8_t> chunk;
 
-    // Seek to start of MFT once
-    LARGE_INTEGER base_offset;
-    base_offset.QuadPart = mft_start_offset;
-    if (!SetFilePointerEx(m_volume_handle, base_offset, nullptr, FILE_BEGIN)) {
-        DebugLog("ScanMft: failed to seek to MFT start");
-        return false;
-    }
-
-    while (bytes_remaining > 0 && records_processed < num_records) {
-        uint64_t to_read = std::min(CHUNK_SIZE, bytes_remaining);
-        // Align to page boundary for efficient reading
-        to_read = (to_read + 4095) & ~(uint64_t)4095;
-        if (to_read > chunk.size()) {
-            chunk.resize((size_t)to_read);
-        }
-
-        DWORD bytes_read = 0;
-        if (!ReadFile(m_volume_handle, chunk.data(), (DWORD)to_read,
-                      &bytes_read, nullptr)) {
-            DWORD err = GetLastError();
-            DebugLog("ScanMft: ReadFile failed at offset "
-                     + std::to_string(mft_start_offset + (m_mft_size - bytes_remaining))
-                     + " error=" + std::to_string(err));
-            break; // Continue with what we have
-        }
-
-        if (bytes_read == 0) break;
-
-        // Process all complete records in this chunk
-        uint64_t chunk_offset = 0;
-        uint64_t max_offset = (uint64_t)bytes_read;
-
-        while (chunk_offset + m_bytes_per_mft_record <= max_offset) {
+    auto processChunk = [&](uint8_t* data, uint64_t data_len, uint64_t& records_in_chunk) {
+        uint64_t offset = 0;
+        while (offset + m_bytes_per_mft_record <= data_len) {
             uint64_t current_record = records_processed;
-            uint8_t* record_start = chunk.data() + chunk_offset;
+            uint8_t* rec = data + offset;
 
-            // Quick check: "FILE" or "BAAD" magic
-            if (memcmp(record_start, "FILE", 4) == 0 ||
-                memcmp(record_start, "BAAD", 4) == 0) {
-
-                FILE_RECORD_HEADER* hdr = (FILE_RECORD_HEADER*)record_start;
-
-                // Check in-use flag before copying
+            if (memcmp(rec, "FILE", 4) == 0 || memcmp(rec, "BAAD", 4) == 0) {
+                FILE_RECORD_HEADER* hdr = (FILE_RECORD_HEADER*)rec;
                 if (hdr->flags & 0x01) {
-                    // Skip extension records quickly
-                    if (hdr->base_record_ref == 0) {
-                        // Copy record to work buffer and apply fixup
-                        std::vector<uint8_t> rec_buf(
-                            record_start,
-                            record_start + (size_t)m_bytes_per_mft_record);
-
-                        if (ApplyFixup(rec_buf, hdr->usa_offset, hdr->usa_size)) {
-                            MftEntry entry;
-                            entry.record_number = current_record;
-                            entry.valid = false;
-                            entry.is_directory = (hdr->flags & 0x02) != 0;
-                            entry.parent_ref = 0;
-                            entry.parent_seq = 0;
-                            entry.parent_record = 0;
-                            entry.real_size = 0;
-                            entry.allocated_size = 0;
-                            entry.modification_time = 0;
-                            entry.creation_time = 0;
-
-                            if (ParseAttributes(rec_buf, entry) && entry.valid) {
+                    std::vector<uint8_t> rec_buf(rec, rec + (size_t)m_bytes_per_mft_record);
+                    if (ApplyFixup(rec_buf, hdr->usa_offset, hdr->usa_size)) {
+                        MftEntry entry;
+                        entry.record_number = current_record;
+                        entry.valid = false;
+                        entry.is_directory = (hdr->flags & 0x02) != 0;
+                        entry.parent_ref = 0;
+                        entry.parent_seq = 0;
+                        entry.parent_record = 0;
+                        entry.real_size = 0;
+                        entry.allocated_size = 0;
+                        entry.modification_time = 0;
+                        entry.creation_time = 0;
+                        if (ParseAttributes(rec_buf, entry) && entry.valid) {
+                            if (hdr->base_record_ref == 0) {
+                                rec_index_map[current_record] = entries.size();
                                 entries.push_back(std::move(entry));
                                 total_valid++;
-
-                                if (total_valid % 50000 == 0) {
-                                    DebugLog("ScanMft: " + std::to_string(total_valid)
-                                             + " valid entries (record "
-                                             + std::to_string(current_record) + ")");
-                                }
+                            } else {
+                                // Extension record: store base record number for merge
+                                entry.record_number = hdr->base_record_ref & 0xFFFFFFFFFFFFULL;
+                                ext_tmp.push_back(std::move(entry));
                             }
+                            if ((total_valid + ext_tmp.size()) % 50000 == 0)
+                                DebugLog("ScanMft: " + std::to_string(total_valid)
+                                         + " valid entries (record " + std::to_string(current_record) + ")");
                         }
                     }
                 }
             }
-
-            chunk_offset += m_bytes_per_mft_record;
+            offset += m_bytes_per_mft_record;
             records_processed++;
         }
+    };
 
-        bytes_remaining -= std::min(bytes_remaining, (uint64_t)bytes_read);
+    // Use data runs if available (for fragmented MFT)
+    if (!m_data_runs.empty()) {
+        for (const auto& run : m_data_runs) {
+            if (run.lcn == (int64_t)-1) continue; // sparse run
+            uint64_t run_offset = (uint64_t)run.lcn * m_bytes_per_cluster;
+            uint64_t run_bytes = run.length * m_bytes_per_cluster;
+
+            LARGE_INTEGER li;
+            li.QuadPart = run_offset;
+            SetFilePointerEx(m_volume_handle, li, nullptr, FILE_BEGIN);
+
+            if (run_bytes > chunk.size()) chunk.resize((size_t)run_bytes);
+            DWORD br;
+            ReadFile(m_volume_handle, chunk.data(), (DWORD)run_bytes, &br, nullptr);
+            processChunk(chunk.data(), br, records_processed);
+        }
+    } else {
+        // Fallback: sequential read from MFT start
+        uint64_t mft_start = m_mft_start_lcn * m_bytes_per_cluster;
+        LARGE_INTEGER li;
+        li.QuadPart = mft_start;
+        SetFilePointerEx(m_volume_handle, li, nullptr, FILE_BEGIN);
+
+        uint64_t remaining = m_mft_size;
+        const uint64_t CS = 8ULL * 1024 * 1024;
+        if (chunk.size() < CS) chunk.resize((size_t)CS);
+
+        while (remaining > 0 && records_processed < num_records) {
+            uint64_t to_read = std::min(CS, remaining);
+            DWORD br;
+            ReadFile(m_volume_handle, chunk.data(), (DWORD)to_read, &br, nullptr);
+            if (br == 0) break;
+            processChunk(chunk.data(), br, records_processed);
+            remaining -= std::min(remaining, (uint64_t)br);
+        }
+    }
+
+    // Merge extension record $DATA into base records
+    uint64_t ext_updated = 0;
+    for (auto& ext : ext_tmp) {
+        auto it = rec_index_map.find(ext.record_number);
+        if (it != rec_index_map.end() && ext.real_size > 0) {
+            MftEntry& base = entries[it->second];
+            if (base.real_size == 0) {
+                base.real_size = ext.real_size;
+                base.allocated_size = ext.allocated_size;
+                ext_updated++;
+            }
+        }
     }
 
     DebugLog("ScanMft: complete - " + std::to_string(total_valid)
-             + " valid entries out of " + std::to_string(records_processed)
-             + " records scanned");
+             + " valid (ext_updated=" + std::to_string(ext_updated) + ")");
     return !entries.empty();
 }
 
@@ -466,12 +541,14 @@ bool MftReader::ParseAttributes(const std::vector<uint8_t>& buffer,
                 break;
             }
             case ATTR_DATA: {
-                // Parse $DATA for size
-                uint64_t real_sz = 0, alloc_sz = 0;
-                if (ParseDataSize(buffer.data() + attr_offset, attr->length,
-                                  attr->non_resident != 0, real_sz, alloc_sz)) {
-                    entry.real_size = real_sz;
-                    entry.allocated_size = alloc_sz;
+                // Only process unnamed $DATA (main stream, not ADS)
+                if (!entry.is_directory && attr->name_length == 0) {
+                    uint64_t real_sz = 0, alloc_sz = 0;
+                    if (ParseDataSize(buffer.data() + attr_offset, attr->length,
+                                      attr->non_resident != 0, real_sz, alloc_sz)) {
+                        entry.real_size = real_sz;
+                        entry.allocated_size = alloc_sz;
+                    }
                 }
                 break;
             }
@@ -539,7 +616,8 @@ bool MftReader::ParseFileName(const uint8_t* attr_start, uint32_t attr_length,
     }
 
     // We want the long name (name_type == 0x01 or 0x03)
-    // 0x01 = Win32 long name, 0x02 = short (8.3) name, 0x03 = both
+    // 0x00 = POSIX, 0x01 = Win32 long name, 0x02 = short (8.3) name, 0x03 = both
+    // Accept POSIX (0x00) and Win32 (0x01, 0x03), reject only short name (0x02)
     if (fn->name_type == 0x02) return false;
 
     // Extract parent reference
@@ -557,11 +635,8 @@ bool MftReader::ParseFileName(const uint8_t* attr_start, uint32_t attr_length,
     entry.creation_time = fn->creation_time;
     entry.modification_time = fn->modification_time;
 
-    // Update size from $FILE_NAME as fallback
-    if (entry.real_size == 0) {
-        entry.real_size = fn->real_size;
-        entry.allocated_size = fn->allocated_size;
-    }
+    // Note: do NOT use fn->real_size as fallback - it can be wrong for
+    // files with $ATTRIBUTE_LIST where $DATA is in an extension record
 
     return true;
 }
@@ -615,12 +690,10 @@ bool MftReader::BuildPathTree(
         parent_children[e.parent_record].push_back(e.record_number);
     }
 
-    // Build path for each entry using iterative DFS or BFS
-    // We'll walk from root (record 5) downwards
+    // Build path for each entry using BFS from root (record 5)
     std::map<uint64_t, std::wstring> record_paths;
     record_paths[5] = L""; // Root
 
-    // BFS to build paths
     std::queue<uint64_t> q;
     q.push(5);
 
@@ -639,7 +712,6 @@ bool MftReader::BuildPathTree(
             std::wstring child_path;
 
             if (current == 5) {
-                // Direct child of root
                 child_path = L"\\" + child.filename;
             } else {
                 child_path = record_paths[current] + L"\\" + child.filename;
@@ -647,10 +719,10 @@ bool MftReader::BuildPathTree(
 
             record_paths[child_record] = child_path;
 
-            // Store in path_map
             PathInfo pi;
             pi.path = child_path;
-            pi.size = child.real_size;
+            // Files keep their own real_size; directories start at 0 and accumulate
+            pi.size = child.is_directory ? 0 : child.real_size;
             pi.modification_time = child.modification_time;
             pi.is_directory = child.is_directory;
             path_map[child_record] = pi;
@@ -659,45 +731,24 @@ bool MftReader::BuildPathTree(
         }
     }
 
-    // Calculate recursive sizes for directories
-    // Process in reverse order (children before parents)
-    // Since record numbers roughly increase, but we need proper topological order
-    // Build a reverse map: record -> list of ancestors up to root
-    std::vector<uint64_t> ordered_records;
-    for (auto& p : path_map) {
-        uint64_t rec = p.first;
-        // Only include entries that had their paths built
-        if (!p.second.path.empty() || rec == 5) {
-            ordered_records.push_back(rec);
-        }
-    }
+    // Accumulate sizes: each FILE adds its real_size to all parent directories
+    // Directories start at 0 and only receive contributions from their children
+    for (const auto& e : entries) {
+        if (e.is_directory) continue; // Skip directories, they have no own size to contribute
+        if (e.record_number == 5) continue; // Skip root
+        if (e.real_size == 0) continue; // Skip empty files
 
-    // Sort by path depth (longer paths = children first)
-    std::sort(ordered_records.begin(), ordered_records.end(),
-        [&path_map](uint64_t a, uint64_t b) {
-            return path_map[a].path.size() > path_map[b].path.size();
-        });
+        uint64_t file_size = e.real_size;
+        uint64_t parent_rec = e.parent_record;
 
-    // For each entry, add its size to all parent directories
-    for (uint64_t rec : ordered_records) {
-        auto it = entry_map.find(rec);
-        if (it == entry_map.end()) continue;
-
-        // Add file's own size to its directory
-        uint64_t parent_rec = it->second->parent_record;
-
-        // Walk up the tree adding size
-        uint64_t current_rec = parent_rec;
-        uint64_t file_size = path_map[rec].size;
-
-        while (current_rec != 5 && path_map.count(current_rec)) {
-            path_map[current_rec].size += file_size;
-
-            auto parent_it = entry_map.find(current_rec);
+        // Walk up the parent chain adding this file's size
+        while (path_map.count(parent_rec) && parent_rec != 5) {
+            path_map[parent_rec].size += file_size;
+            auto parent_it = entry_map.find(parent_rec);
             if (parent_it == entry_map.end()) break;
-            current_rec = parent_it->second->parent_record;
+            parent_rec = parent_it->second->parent_record;
         }
-        // Add to root too
+        // Also add to root entry if it exists
         if (path_map.count(5)) {
             path_map[5].size += file_size;
         }
@@ -708,6 +759,10 @@ bool MftReader::BuildPathTree(
     for (auto& p : path_map) {
         if (p.first == 5) continue; // Skip root
         if (!p.second.path.empty()) {
+            // Only clear $BadClus (NTFS pseudo-file that reports volume size)
+            if (p.second.path == L"\\$BadClus") {
+                p.second.size = 0;
+            }
             results.push_back(p.second);
         }
     }
