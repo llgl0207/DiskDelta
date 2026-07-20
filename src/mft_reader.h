@@ -6,6 +6,23 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <mutex>
+
+// Global debug log collector (for web API access)
+struct DebugLogCollector {
+    std::mutex mtx;
+    std::vector<std::string> lines;
+    void add(const std::string& line) {
+        std::lock_guard<std::mutex> lock(mtx);
+        if (lines.size() > 10000) lines.erase(lines.begin(), lines.begin() + 5000);
+        lines.push_back(line);
+    }
+    std::vector<std::string> get() {
+        std::lock_guard<std::mutex> lock(mtx);
+        return lines;
+    }
+};
+extern DebugLogCollector g_debug_log;
 
 #pragma pack(push, 1)
 

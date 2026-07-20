@@ -24,9 +24,21 @@
 // ============================================================
 // Configuration
 // ============================================================
-static std::wstring g_data_dir = L"data";
-static std::wstring g_web_dir = L"web";
+static std::wstring g_data_dir;
+static std::wstring g_web_dir;
 static int g_port = 45678;
+
+// Get the directory where the executable is located
+static std::wstring GetExeDir() {
+    wchar_t path[MAX_PATH];
+    GetModuleFileNameW(nullptr, path, MAX_PATH);
+    std::wstring exe_path(path);
+    auto pos = exe_path.find_last_of(L'\\');
+    if (pos != std::wstring::npos) {
+        return exe_path.substr(0, pos);
+    }
+    return L".";
+}
 
 // ============================================================
 // JSON utilities
@@ -245,6 +257,22 @@ static Response HandleRequest(
         json << "  \"status\": \"ok\",\n";
         json << "  \"version\": \"1.0.0\",\n";
         json << "  \"name\": \"DiskDelta - NTFS MFT Scanner\"\n";
+        json << "}\n";
+        return JsonOK(json.str());
+    }
+
+    // GET /api/debuglog - get debug logs
+    if (base_path == "/api/debuglog" && method == "GET") {
+        auto lines = g_debug_log.get();
+        std::ostringstream json;
+        json << "{\n";
+        json << "  \"lines\": [\n";
+        for (size_t i = 0; i < lines.size(); i++) {
+            json << "    \"" << EscapeJson(lines[i]) << "\"";
+            if (i < lines.size() - 1) json << ",";
+            json << "\n";
+        }
+        json << "  ]\n";
         json << "}\n";
         return JsonOK(json.str());
     }
@@ -587,6 +615,15 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     std::cout << "  DiskDelta - NTFS MFT Scanner & Diff" << std::endl;
     std::cout << "========================================" << std::endl;
     std::cout << std::endl;
+
+    // Initialize default paths relative to executable directory
+    {
+        std::wstring exe_dir = GetExeDir();
+        if (g_data_dir.empty()) g_data_dir = exe_dir + L"\\data";
+        if (g_web_dir.empty()) g_web_dir = exe_dir + L"\\web";
+    }
+
+    std::cout << "[Init] Data directory: " << WideToUtf8(g_data_dir) << std::endl;
 
     // Single-instance check: kill any previous DiskDelta process
     HANDLE mutex = CreateMutexW(nullptr, FALSE, L"DiskDelta_Instance_Mutex");

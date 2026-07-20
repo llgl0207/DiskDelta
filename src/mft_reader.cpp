@@ -15,6 +15,9 @@
 // ============================================================
 // Debug logging - outputs to console and log file
 // ============================================================
+// Global debug log collector
+DebugLogCollector g_debug_log;
+
 static void DebugLog(const std::string& msg) {
     time_t now = time(nullptr);
     struct tm tm_buf;
@@ -24,6 +27,9 @@ static void DebugLog(const std::string& msg) {
 
     // Output to console (if available)
     std::cout << "[" << buf << "] " << msg << std::endl;
+
+    // Collect for web API
+    g_debug_log.add(msg);
 
     // Also write to log file
     std::ofstream log("diskdelta_debug.log", std::ios::app);
@@ -324,10 +330,34 @@ bool MftReader::ParseDataRuns(const uint8_t* attr_start, std::vector<DataRun>& r
 }
 
 bool MftReader::ReadMftRecord(uint64_t record_number, std::vector<uint8_t>& buffer) {
-    // Calculate byte offset: MFT starts at m_mft_start_lcn * bytes_per_cluster
-    // Each record is m_bytes_per_mft_record bytes
-    uint64_t record_offset = record_number * m_bytes_per_mft_record;
-    uint64_t abs_offset = m_mft_start_lcn * m_bytes_per_cluster + record_offset;
+    // Calculate byte offset within the MFT data
+    uint64_t record_vcn = (record_number * m_bytes_per_mft_record) / m_bytes_per_cluster;
+    uint64_t record_offset_in_vcn = (record_number * m_bytes_per_mft_record) % m_bytes_per_cluster;
+
+    uint64_t abs_offset = 0;
+    bool found = false;
+
+    // Use data runs to resolve VCN → LCN (handles fragmented MFT)
+    if (!m_data_runs.empty()) {
+        for (const auto& run : m_data_runs) {
+            if (run.vcn <= record_vcn && record_vcn < run.vcn + (int64_t)run.length) {
+                int64_t offset_in_run = record_vcn - run.vcn;
+                if (run.lcn >= 0) {
+                    abs_offset = (uint64_t)(run.lcn + offset_in_run) * m_bytes_per_cluster + record_offset_in_vcn;
+                } else {
+                    // Sparse run — treat as zero-filled; fallback below will handle it
+                    break;
+                }
+                found = true;
+                break;
+            }
+        }
+    }
+
+    if (!found) {
+        // Fallback: sequential offset (works for non-fragmented MFT)
+        abs_offset = m_mft_start_lcn * m_bytes_per_cluster + record_number * m_bytes_per_mft_record;
+    }
 
     // Seek to position
     LARGE_INTEGER li;
@@ -414,6 +444,8 @@ bool MftReader::ScanMft(std::vector<MftEntry>& entries) {
     entries.reserve((size_t)std::min(num_records, (uint64_t)3000000));
     std::unordered_map<uint64_t, size_t> rec_index_map;
     std::vector<MftEntry> ext_tmp;
+    // Track which base records still need $DATA from extensions
+    std::unordered_map<uint64_t, uint64_t> zero_ext_records; // base_rec -> extension's own record number
 
     uint64_t total_valid = 0;
     uint64_t records_processed = 0;
@@ -447,8 +479,13 @@ bool MftReader::ScanMft(std::vector<MftEntry>& entries) {
                                 entries.push_back(std::move(entry));
                                 total_valid++;
                             } else {
-                                // Extension record: store base record number for merge
-                                entry.record_number = hdr->base_record_ref & 0xFFFFFFFFFFFFULL;
+                                // Extension record: resolve to ultimate base record number
+                                // base_record_ref may point to another extension or the base
+                                uint64_t base_num = hdr->base_record_ref & 0xFFFFFFFFFFFFULL;
+                                // During first pass we don't know the chain yet;
+                                // store both extension record number AND resolved base
+                                entry.record_number = current_record;
+                                entry.parent_ref = base_num; // abuse parent_ref to store base
                                 ext_tmp.push_back(std::move(entry));
                             }
                             if ((total_valid + ext_tmp.size()) % 50000 == 0)
@@ -500,19 +537,176 @@ bool MftReader::ScanMft(std::vector<MftEntry>& entries) {
         }
     }
 
-    // Merge extension record $DATA into base records
-    uint64_t ext_updated = 0;
+    // Multi-pass: resolve extension record chain and merge $DATA
+    // ext_tmp entries have: record_number = extension's own record,
+    //                        parent_ref = direct base record ref
+    // Build a map: extension_record -> parent_record
+    std::unordered_map<uint64_t, uint64_t> ext_to_base;
+    std::unordered_map<uint64_t, uint64_t> ext_data_size; // extension record -> its $DATA size
     for (auto& ext : ext_tmp) {
-        auto it = rec_index_map.find(ext.record_number);
-        if (it != rec_index_map.end() && ext.real_size > 0) {
+        uint64_t ext_rec = ext.record_number;
+        uint64_t dir_base = ext.parent_ref;
+        ext_to_base[ext_rec] = dir_base;
+        if (ext.real_size > 0) {
+            auto it = ext_data_size.find(ext_rec);
+            if (it == ext_data_size.end() || ext.real_size > it->second)
+                ext_data_size[ext_rec] = ext.real_size;
+        }
+    }
+
+    // For each extension, resolve the ultimate base record and apply its $DATA
+    uint64_t ext_updated = 0;
+    std::unordered_map<uint64_t, uint64_t> base_best_size; // base_rec -> best $DATA size
+
+    for (auto& [ext_rec, dir_base] : ext_to_base) {
+        // Walk the chain: ext_rec -> ... -> ultimate base (with base_record_ref == 0)
+        uint64_t cur = ext_rec;
+        std::set<uint64_t> visited;
+        while (visited.find(cur) == visited.end()) {
+            visited.insert(cur);
+            auto it = ext_to_base.find(cur);
+            if (it == ext_to_base.end()) break;
+            uint64_t parent = it->second;
+            // Check if parent is a known base record (exists in rec_index_map)
+            if (rec_index_map.find(parent) != rec_index_map.end()) {
+                // Found ultimate base
+                auto sz_it = ext_data_size.find(ext_rec);
+                if (sz_it != ext_data_size.end()) {
+                    auto best = base_best_size.find(parent);
+                    if (best == base_best_size.end() || sz_it->second > best->second)
+                        base_best_size[parent] = sz_it->second;
+                }
+                break;
+            }
+            cur = parent;
+        }
+    }
+
+    // Apply best sizes
+    for (auto& [base_rec, best_size] : base_best_size) {
+        auto it = rec_index_map.find(base_rec);
+        if (it != rec_index_map.end()) {
             MftEntry& base = entries[it->second];
-            if (base.real_size == 0) {
-                base.real_size = ext.real_size;
-                base.allocated_size = ext.allocated_size;
+            if (base.real_size == 0 && best_size > 0) {
+                base.real_size = best_size;
                 ext_updated++;
             }
         }
     }
+
+    // Final pass: for remaining zero-size files, search for $ATTRIBUTE_LIST
+    // in their MFT records to find extension records with $DATA
+    std::vector<size_t> still_zero;
+    for (size_t i = 0; i < entries.size(); i++) {
+        if (entries[i].real_size == 0 && !entries[i].is_directory) {
+            still_zero.push_back(i);
+        }
+    }
+    DebugLog("ATTRIBUTE_LIST: " + std::to_string(still_zero.size()) + " zero files to process");
+
+    uint64_t final_updated = 0;
+    uint64_t attr_list_found = 0;
+    uint64_t ext_refs_total = 0;
+    uint64_t ext_read_ok = 0;
+    for (size_t idx : still_zero) {
+        MftEntry& base = entries[idx];
+        uint64_t base_rec = base.record_number;
+
+        // Read this base record directly to parse $ATTRIBUTE_LIST
+        // and find all extension record references
+        std::vector<uint8_t> base_buf;
+        if (!ReadMftRecord(base_rec, base_buf)) continue;
+
+        FILE_RECORD_HEADER* hdr = (FILE_RECORD_HEADER*)base_buf.data();
+        uint16_t aoff = hdr->attr_offset;
+        std::vector<uint64_t> ext_refs; // extension record numbers
+        
+        while (aoff + sizeof(ATTR_HEADER) <= hdr->allocated_size) {
+            ATTR_HEADER* ah = (ATTR_HEADER*)(base_buf.data() + aoff);
+            if (ah->type == 0xFFFFFFFF || ah->length == 0) break;
+            
+            // Found $ATTRIBUTE_LIST - parse entries inside it
+            if (ah->type == ATTR_ATTRIBUTE_LIST && !ah->non_resident) {
+                attr_list_found++;
+                ATTR_HEADER_RESIDENT* res = (ATTR_HEADER_RESIDENT*)((uint8_t*)ah + sizeof(ATTR_HEADER));
+                uint32_t vo = res->value_offset;
+                uint32_t vl = res->value_length;
+                const uint8_t* list_data = base_buf.data() + aoff + vo;
+                
+                // Each ATTRIBUTE_LIST_ENTRY has variable length:
+                // Type(4) + Length(2) + NameLen(1) + NameOffset(1) + 
+                // LowVcn(8) + FileRef(8) + Instance(2) + [Name...]
+                // Total fixed part: 26 bytes. Use entry_len for stepping.
+                for (uint32_t li = 0; li + 26 <= vl; ) {
+                    const uint8_t* entry = list_data + li;
+                    uint32_t attr_type = *(uint32_t*)entry;
+                    if (attr_type == 0xFFFFFFFF) break;
+                    uint16_t entry_len = *(uint16_t*)(entry + 4);
+                    if (entry_len == 0 || entry_len < 26) break;
+                    
+                    // Ensure entry fits in remaining data
+                    if (li + entry_len > vl) break;
+                    
+                    // File reference at offset 16 (8 bytes, lower 48 bits = record number)
+                    uint64_t file_ref = *(uint64_t*)(entry + 16);
+                    uint64_t ext_rec = file_ref & 0xFFFFFFFFFFFFULL;
+                    
+                    // Only interested in $DATA extension records
+                    if (attr_type == ATTR_DATA && ext_rec != base_rec) {
+                        ext_refs.push_back(ext_rec);
+                    }
+                    
+                    li += entry_len; // Step by actual entry length, not fixed size
+                }
+                break; // Only one $ATTRIBUTE_LIST
+            }
+            
+            aoff += ah->length;
+        }
+        
+        // Read each extension record to get its $DATA size
+        // Sum sizes across all $DATA extension records for the same base record
+        uint64_t total_size = 0;
+        for (uint64_t ext_rec : ext_refs) {
+            std::vector<uint8_t> ext_buf;
+            if (!ReadMftRecord(ext_rec, ext_buf)) {
+                DebugLog("ATTRIBUTE_LIST: ReadMftRecord failed for ext record " + std::to_string(ext_rec));
+                continue;
+            }
+            ext_read_ok++;
+            MftEntry ext_entry;
+            ext_entry.valid = false;
+            ext_entry.record_number = ext_rec;
+            ext_entry.is_directory = false;
+            // ParseAttributes only: don't need $FILE_NAME for extension records
+            ParseAttributes(ext_buf, ext_entry);
+            if (ext_entry.real_size > 0) {
+                total_size += ext_entry.real_size;
+                DebugLog("ATTRIBUTE_LIST: ext record " + std::to_string(ext_rec)
+                         + " size=" + std::to_string(ext_entry.real_size)
+                         + " total_so_far=" + std::to_string(total_size));
+            } else {
+                DebugLog("ATTRIBUTE_LIST: ext record " + std::to_string(ext_rec)
+                         + " real_size=0 valid=" + std::to_string(ext_entry.valid));
+            }
+        }
+        
+        if (total_size > 0) {
+            base.real_size = total_size;
+            final_updated++;
+            DebugLog("ATTRIBUTE_LIST: updated base record " + std::to_string(base_rec)
+                     + " to total size " + std::to_string(total_size));
+        } else {
+            DebugLog("ATTRIBUTE_LIST: NO size found for base record " + std::to_string(base_rec)
+                     + " ext_refs=" + std::to_string(ext_refs.size())
+                     + " ext_read_ok=" + std::to_string(ext_read_ok)
+                     + " attr_list_found=" + std::to_string(attr_list_found));
+        }
+    }
+
+    DebugLog("ATTRIBUTE_LIST: final_updated=" + std::to_string(final_updated)
+             + " attr_list_found=" + std::to_string(attr_list_found)
+             + " ext_read_ok=" + std::to_string(ext_read_ok));
 
     DebugLog("ScanMft: complete - " + std::to_string(total_valid)
              + " valid (ext_updated=" + std::to_string(ext_updated) + ")");
