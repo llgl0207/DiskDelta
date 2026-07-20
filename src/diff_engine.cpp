@@ -216,7 +216,12 @@ DiffEngine::DiffSummary DiffEngine::GetSummary() const {
             case DiffStatus::SIZE_INCREASED: summary.increased++; break;
             case DiffStatus::SIZE_DECREASED: summary.decreased++; break;
         }
-        summary.total_size_delta += e.size_delta;
+        // Only count non-directory entries to avoid double-counting:
+        // Directory sizes already include all their children's deltas recursively,
+        // so summing both would multiply the actual change.
+        if (!e.is_directory) {
+            summary.total_size_delta += e.size_delta;
+        }
     }
 
     return summary;

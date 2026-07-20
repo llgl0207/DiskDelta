@@ -274,6 +274,16 @@ bool MftReader::LocateMft() {
                             ParseDataRuns(rec0.data() + aoff, m_data_runs);
                             DebugLog("LocateMft: parsed " + std::to_string(m_data_runs.size())
                                      + " data runs");
+                            // Use $DATA allocated_size for full MFT size
+                            ATTR_HEADER_NONRESIDENT* nr =
+                                (ATTR_HEADER_NONRESIDENT*)(rec0.data() + aoff + sizeof(ATTR_HEADER));
+                            if (nr->allocated_size > m_mft_size) {
+                                DebugLog("LocateMft: extending mft_size from " 
+                                         + std::to_string(m_mft_size)
+                                         + " to " + std::to_string(nr->allocated_size)
+                                         + " (allocated_size)");
+                                m_mft_size = nr->allocated_size;
+                            }
                             break;
                         }
                         aoff += ah->length;
